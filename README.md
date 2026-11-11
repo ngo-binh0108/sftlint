@@ -3,7 +3,8 @@
 [![tests](https://github.com/ngo-binh0108/sftlint/actions/workflows/tests.yml/badge.svg)](https://github.com/ngo-binh0108/sftlint/actions/workflows/tests.yml)
 
 Check a fine-tuning dataset before you spend GPU hours on it. sftlint reads chat and preference (DPO) datasets in
-JSONL and finds the records that quietly make a fine-tune worse:
+JSONL, JSON or Parquet, from your disk or straight from a Hugging Face dataset, and finds the records that quietly
+make a fine-tune worse:
 
 - lines that are not valid JSON, empty answers, unknown roles, conversations with no assistant turn
 - turns out of order: two user turns in a row, a system prompt in the middle, a tool result with no tool call
@@ -14,14 +15,14 @@ JSONL and finds the records that quietly make a fine-tune worse:
 - eval or test records that also appear in the training data
 - records longer than your training context
 
-It needs only the Python standard library. numpy makes duplicate finding about three times faster, and
-[`tokenizers`](https://github.com/huggingface/tokenizers) gives exact token counts.
+It needs only the Python standard library. numpy makes duplicate finding about three times faster,
+[`tokenizers`](https://github.com/huggingface/tokenizers) gives exact token counts, and pyarrow reads Parquet files.
 
 ## Install
 
 ```sh
 pip install git+https://github.com/ngo-binh0108/sftlint
-pip install "sftlint[fast,tokenizer] @ git+https://github.com/ngo-binh0108/sftlint"   # with numpy and tokenizers
+pip install "sftlint[fast,tokenizer,hub] @ git+https://github.com/ngo-binh0108/sftlint"   # with numpy, tokenizers and pyarrow
 ```
 
 ## Usage
@@ -32,6 +33,8 @@ sftlint train.jsonl --eval test.jsonl                # also look for test record
 sftlint train.jsonl --max-tokens 4096 --tokenizer Qwen/Qwen3-8B
 sftlint train.jsonl --write-clean train.clean.jsonl  # keep only records without errors or repeats
 sftlint train.jsonl --json                           # machine-readable report
+sftlint trl-lib/ultrafeedback_binarized --eval trl-lib/ultrafeedback_binarized   # a Hugging Face dataset, train vs test
+sftlint Anthropic/hh-rlhf/helpful-base/test.jsonl.gz                            # one file from a dataset
 ```
 
 Running it on the [example dataset](examples) in this repository:
@@ -82,6 +85,9 @@ warnings count too.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--eval FILE` | none | eval or test set to check for leaks; repeat it for several files |
+| `--split NAME` | `train` | split to read from a Hugging Face dataset |
+| `--eval-split NAME` | `test` | split to read from a Hugging Face dataset given to `--eval` |
+| `--revision REV` | `main` | branch, tag or commit of Hugging Face datasets |
 | `--max-tokens N` | off | warn about records longer than N tokens |
 | `--tokenizer NAME` | estimate | count tokens with a Hugging Face tokenizer: a repo id or a `tokenizer.json` path |
 | `--similarity X` | `0.8` | how similar two records must be to count as near-duplicates |
@@ -104,7 +110,8 @@ Each record is detected on its own, so one file can mix formats.
 | preference (DPO, ORPO, reward models) | `chosen` and `rejected`, with an optional `prompt`; each a string or a message list. Without `prompt`, the turns both answers start with are the prompt. Pairs of plain strings with no prompt, like Anthropic's hh-rlhf, are treated as text |
 | text | `text`, already formatted with a chat template; only empty and too-long records are checked |
 
-Files ending in `.json` may hold one array of records; anything else is read as JSON Lines.
+Files ending in `.json` may hold one array of records, `.parquet` files need pyarrow, and `.gz` files are
+decompressed first. Anything else is read as JSON Lines.
 
 ## Checks
 
@@ -126,6 +133,31 @@ Files ending in `.json` may hold one array of records; anything else is read as 
 | `too-long` | warning | records over `--max-tokens`; for a preference pair, the longer of prompt + chosen and prompt + rejected |
 | `duplicate` | warning | records that repeat an earlier one, ignoring case, spacing and punctuation |
 | `near-duplicate` | warning | records at least `--similarity` similar to an earlier one |
+
+## Hugging Face datasets
+
+Give a dataset as `org/name` to read the data files of one split, or as `org/name/path/in/repo` to read one file.
+A split's files are found by name, such as `train.jsonl` or `data/train-00000-of-00002.parquet`; if the repo holds a
+single data file, that file is used. Files are cached in `~/.cache/sftlint` (`%LOCALAPPDATA%\sftlint` on Windows,
+or `SFTLINT_CACHE`) and downloaded again only when their size changes. For gated or private datasets, set `HF_TOKEN`.
+
+On [trl-lib/ultrafeedback_binarized](https://huggingface.co/datasets/trl-lib/ultrafeedback_binarized), a common DPO
+dataset, with its test split as the eval set:
+
+```text
+$ sftlint trl-lib/ultrafeedback_binarized --eval trl-lib/ultrafeedback_binarized
+...
+ERROR   empty-turn: a turn has no text (95)
+ERROR   eval-leak: an eval record also appears in the training data (1)
+ERROR   same-answer: the chosen and rejected answers are the same (447)
+WARNING template-token: the text contains chat-template tokens (415)
+WARNING boilerplate: an assistant turn (or a chosen answer) has AI boilerplate or a refusal (1,041)
+WARNING near-duplicate: the record is almost the same as an earlier one (87)
+
+543 errors and 1,543 warnings in 63,135 records.
+```
+
+447 pairs have the same chosen and rejected answer, and 95 have an empty answer on one side.
 
 ## Preference datasets
 

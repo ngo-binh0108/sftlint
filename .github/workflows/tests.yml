@@ -17,8 +17,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      # numpy only on the newer Python, so the pure-Python path is tested on its own as well
-      - run: pip install -e ".[test${{ matrix.python == '3.13' && ',fast' || '' }}]" ruff
+      # numpy and pyarrow only on the newer Python, so the pure-Python path is tested on its own as well
+      - run: pip install -e ".[test${{ matrix.python == '3.13' && ',fast,hub' || '' }}]" ruff
       - run: ruff check src tests
       - run: ruff format --check src tests
       - run: pytest -q

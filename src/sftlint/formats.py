@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -177,13 +178,38 @@ def parse(rec: Record, obj) -> None:
         )
 
 
-def load(path: str) -> list[Record]:
-    """Read a .jsonl file (one record per line) or a .json file holding an array of records."""
+def _parquet(path: str, name: str) -> list[Record]:
+    try:
+        import pyarrow.parquet
+    except ImportError:
+        raise SystemExit(f"{name}: reading Parquet needs pyarrow: pip install pyarrow") from None
+    records = []
+    for i, obj in enumerate(pyarrow.parquet.read_table(path).to_pylist()):
+        rec = Record(name, f"{name}[{i}]")
+        parse(rec, obj)
+        records.append(rec)
+    return records
+
+
+def load(path: str, name: str | None = None) -> list[Record]:
+    """Read a .jsonl file (one record per line), a .json file holding an array of records, either of them
+    gzipped, or a .parquet file. `name` is what reports call the file, if not its path."""
+    name = name or path
+    lower = path.lower()
+    if lower.endswith(".parquet"):
+        return _parquet(path, name)
     raw = Path(path).read_bytes()
+    if lower.endswith(".gz"):
+        try:
+            raw = gzip.decompress(raw)
+        except (OSError, EOFError):
+            return [Record(name, name, problems=[("bad-encoding", "file is not valid gzip")])]
+        lower = lower[:-3]
+    path = name  # from here on, records are labelled with the name
     if raw.startswith(b"\xef\xbb\xbf"):
         raw = raw[3:]
 
-    if Path(path).suffix.lower() == ".json":
+    if lower.endswith(".json"):
         try:
             data = json.loads(raw.decode("utf-8"))
         except UnicodeDecodeError:
