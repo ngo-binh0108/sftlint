@@ -32,6 +32,7 @@ sftlint train.jsonl                                  # check one file
 sftlint train.jsonl --eval test.jsonl                # also look for test records in the training data
 sftlint train.jsonl --max-tokens 4096 --tokenizer Qwen/Qwen3-8B
 sftlint train.jsonl --write-clean train.clean.jsonl  # keep only records without errors or repeats
+sftlint train.jsonl --write-clean out.jsonl --strip-tokens   # and take stray template tokens off the text
 sftlint train.jsonl --json                           # machine-readable report
 sftlint trl-lib/ultrafeedback_binarized --eval trl-lib/ultrafeedback_binarized   # a Hugging Face dataset, train vs test
 sftlint Anthropic/hh-rlhf/helpful-base/test.jsonl.gz                            # one file from a dataset
@@ -93,6 +94,7 @@ warnings count too.
 | `--similarity X` | `0.8` | how similar two records must be to count as near-duplicates |
 | `--skip CODES` | none | checks to turn off, comma-separated, e.g. `boilerplate,near-duplicate` |
 | `--write-clean OUT` | off | write the training records without errors, duplicates or near-duplicates to OUT |
+| `--strip-tokens` | off | with `--write-clean`, take template tokens off the start and end of every string written |
 | `--strict` | off | exit with 1 on warnings as well |
 | `--all` | off | list every issue instead of the first five of each kind |
 | `--json` | off | print the report as JSON |
@@ -128,7 +130,7 @@ decompressed first. Anything else is read as JSON Lines.
 | `prompt-mismatch` | error | preference pairs without a `prompt` field whose two answers start from different prompts |
 | `role-order` | warning | a conversation starting with the assistant, two user or assistant turns in a row, a system turn after the start, a tool result with no assistant turn before it |
 | `ends-with-user` | warning | a last turn that is not from the assistant, so nothing after it is learned |
-| `template-token` | warning | template tokens from ChatML, Llama 3, Gemma, Phi, Mistral and Llama 2 inside the text |
+| `template-token` | warning | template tokens from ChatML, Llama 3, Gemma, Phi, Mistral and Llama 2 inside the text; an end token with more text after it in an answer is called out, since that is usually a model that did not stop |
 | `boilerplate` | warning | "As an AI language model", "my knowledge cutoff", stock refusals and similar phrases in assistant turns; in a preference pair only the chosen side is checked, since rejected answers are often refusals |
 | `too-long` | warning | records over `--max-tokens`; for a preference pair, the longer of prompt + chosen and prompt + rejected |
 | `duplicate` | warning | records that repeat an earlier one, ignoring case, spacing and punctuation |
@@ -157,7 +159,24 @@ WARNING near-duplicate: the record is almost the same as an earlier one (87)
 543 errors and 1,543 warnings in 63,135 records.
 ```
 
-447 pairs have the same chosen and rejected answer, and 95 have an empty answer on one side.
+447 pairs have the same chosen and rejected answer, and 95 have an empty answer on one side. Most of the
+template-token warnings are answers that go on after `</s>`:
+
+```text
+  trl-lib/ultrafeedback_binarized/data/train-00000-of-00001.parquet[199]  turn 2 (assistant) contains </s> followed by
+  458 more characters, which is often a model running on past its answer
+```
+
+## Taking template tokens out
+
+With `--write-clean OUT --strip-tokens`, the records written to OUT lose the template tokens at the start and end
+of their strings, together with the role header a token opens: `<|im_start|>assistant\nCook garlic.<|im_end|>`
+becomes `Cook garlic.`, and `<|start_header_id|>user<|end_header_id|>` goes as a whole. A record left with an
+empty turn is not written.
+
+Text with tokens in the middle is left as it is and still reported. Tokens there mark turn boundaries or an answer
+that runs on, and taking them out would run turns together or keep text that should be cut. `text` records are
+also left alone, since a pre-formatted record is meant to hold its template.
 
 ## Preference datasets
 
