@@ -1,0 +1,2 @@
+{"messages": [{"role": "system", "content": "You are a helpful cooking assistant."}, {"role": "user", "content": "What can I use instead of buttermilk?"}, {"role": "assistant", "content": "Stir one tablespoon of lemon juice into a cup of milk and wait five minutes."}]}
+{"messages": [{"role": "system", "content": "You are a helpful cooking assistant."}, {"role": "user", "content": "How do I keep herbs fresh?"}, {"role": "assistant", "content": "Wrap them in a damp paper towel and keep them in a bag in the fridge."}]}
