@@ -8,7 +8,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from . import __version__
+from . import __version__, hub
 from .checks import CHECKS, Issue, approx_tokens, check_record
 from .dedupe import Index, tokens
 from .formats import Record, load
@@ -119,8 +119,16 @@ def build_parser() -> argparse.ArgumentParser:
         prog="sftlint",
         description="Find broken records, duplicates and eval leaks in a fine-tuning dataset before you train on it.",
     )
-    ap.add_argument("files", nargs="+", metavar="FILE", help="training data, .jsonl or a .json array")
-    ap.add_argument("--eval", action="append", default=[], metavar="FILE", help="eval or test set to check for leaks (repeatable)")
+    ap.add_argument(
+        "files",
+        nargs="+",
+        metavar="DATA",
+        help="training data: .jsonl, .json, .gz or .parquet files, or a Hugging Face dataset as org/name or org/name/path/file",
+    )
+    ap.add_argument("--eval", action="append", default=[], metavar="DATA", help="eval or test set to check for leaks (repeatable)")
+    ap.add_argument("--split", default="train", help="split to read from a Hugging Face dataset (default train)")
+    ap.add_argument("--eval-split", default="test", help="split to read from a Hugging Face dataset given to --eval (default test)")
+    ap.add_argument("--revision", default="main", help="branch, tag or commit of Hugging Face datasets (default main)")
     ap.add_argument("--max-tokens", type=int, metavar="N", help="warn about records longer than N tokens")
     ap.add_argument("--tokenizer", metavar="NAME", help="count tokens with this Hugging Face tokenizer (repo id or tokenizer.json)")
     ap.add_argument("--similarity", type=float, default=0.8, metavar="X", help="near-duplicate threshold, 0 to 1 (default 0.8)")
@@ -142,13 +150,24 @@ def main(argv: list[str] | None = None) -> int:
         ap.error(f"unknown check(s) in --skip: {', '.join(sorted(unknown))}. Known: {', '.join(CHECKS)}")
     if not 0 < args.similarity <= 1:
         ap.error("--similarity must be above 0 and at most 1")
-    for path in args.files + args.eval:
-        if not Path(path).is_file():
-            ap.error(f"no such file: {path}")
+
+    sources = []  # (name shown in the report, local path, is eval)
+    for ref, is_eval in [(f, False) for f in args.files] + [(f, True) for f in args.eval]:
+        if Path(ref).is_file():
+            sources.append((ref, ref, is_eval))
+        elif hub.looks_like_repo(ref):
+            try:
+                found = hub.resolve(ref, args.eval_split if is_eval else args.split, args.revision)
+            except hub.HubError as e:
+                ap.error(str(e))
+            sources += [(name, str(local), is_eval) for name, local in found]
+        else:
+            ap.error(f"no such file: {ref}")
 
     count, approx = token_counter(args.tokenizer)
-    train = [rec for path in args.files for rec in load(path)]
-    evals = [rec for path in args.eval for rec in load(path)]
+    loaded = [(name, is_eval, load(local, name)) for name, local, is_eval in sources]
+    train = [rec for _, is_eval, records in loaded if not is_eval for rec in records]
+    evals = [rec for _, is_eval, records in loaded if is_eval for rec in records]
 
     issues: list[Issue] = []
     bad: set[int] = set()
@@ -162,10 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         dupes, repeats = find_duplicates(train, evals, args.similarity, skip)
         issues += dupes
 
-    files = []
-    for path, is_eval in [(p, False) for p in args.files] + [(p, True) for p in args.eval]:
-        records = [r for r in (evals if is_eval else train) if r.path == path]
-        files.append({"path": path, "eval": is_eval, "stats": file_stats(records, count)})
+    files = [{"path": name, "eval": is_eval, "stats": file_stats(records, count)} for name, is_eval, records in loaded]
     errors = sum(i.level == "error" for i in issues)
     report = {
         "approx": approx,
