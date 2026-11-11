@@ -61,6 +61,16 @@ BOILERPLATE = re.compile(
     re.IGNORECASE,
 )
 
+
+def tokens_in(text: str) -> list[str]:
+    """The template tokens in a text. "</s>" closing an earlier "<s>" is a markup tag (strikethrough, or an XML
+    element named s), not Llama's end token, unless the text also has Llama 2's [INST]."""
+    found = [t for t in TEMPLATE_TOKENS if t in text]
+    if "</s>" in found and "[INST]" not in text and -1 < text.find("<s>") < text.find("</s>"):
+        found.remove("</s>")
+    return found
+
+
 _CJK = re.compile(r"[぀-ヿ㐀-䶿一-鿿가-힯豈-﫿]")
 
 
@@ -111,7 +121,7 @@ def _turn_issues(turns: list[Turn], where: str, first: int = 1, label: str = "tu
             issues.append(Issue("unknown-role", where, f"{label} {i} has role {t.role!r}"))
         if not t.text.strip():
             issues.append(Issue("empty-turn", where, f"{label} {i} ({t.role}) is empty"))
-    found = next(((i, t, tok) for i, t in enumerate(turns, first) for tok in TEMPLATE_TOKENS if tok in t.text), None)
+    found = next(((i, t, tok) for i, t in enumerate(turns, first) for tok in tokens_in(t.text)), None)
     if found:
         i, t, tok = found
         after = t.text.split(tok, 1)[1].strip()
