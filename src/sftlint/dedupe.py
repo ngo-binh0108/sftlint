@@ -22,8 +22,12 @@ BANDS = 16  # 16 bands of 4 rows: pairs above about 0.5 similarity become candid
 
 
 def tokens(rec: Record) -> list[str]:
-    """Lower-cased words of the record, leaving out system prompts, which many records share."""
-    text = "\n".join(t.text for t in rec.turns if t.role not in ("system", "developer"))
+    """Lower-cased words of the record, leaving out system prompts, which many records share.
+
+    A preference pair includes its rejected answer, so pairs that share a prompt and a chosen answer still differ.
+    """
+    turns = rec.turns + (rec.rejected or [])
+    text = "\n".join(t.text for t in turns if t.role not in ("system", "developer"))
     return _TOKEN.findall(text.lower())
 
 
