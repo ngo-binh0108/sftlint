@@ -11,7 +11,8 @@ from pathlib import Path
 from . import __version__, hub
 from .checks import CHECKS, Issue, approx_tokens, check_record
 from .dedupe import Index, tokens
-from .formats import Record, load
+from .fix import strip_tokens
+from .formats import Record, load, parse
 
 DEDUPE_CODES = {"duplicate", "near-duplicate", "eval-leak"}
 
@@ -47,6 +48,25 @@ def file_stats(records: list[Record], count) -> dict:
         "tokens": {"p50": percentile(lengths, 0.5), "p95": percentile(lengths, 0.95), "max": max(lengths, default=0)},
         "system_prompts": {"records": sum(systems.values()), "distinct": len(systems)},
     }
+
+
+def clean_records(records: list[Record], strip: bool) -> tuple[list, int, int]:
+    """(objects to write, how many had template tokens taken out, how many were left with an error by that and dropped)."""
+    objects, fixed, emptied = [], 0, 0
+    for rec in records:
+        obj = rec.data
+        # Pre-formatted text is supposed to hold template tokens, so it is left alone.
+        if strip and rec.turns and rec.turns[0].role != "text":
+            new = strip_tokens(obj)
+            if new != obj:
+                again = Record(rec.path, rec.where)
+                parse(again, new)
+                if any(i.level == "error" for i in check_record(again)):
+                    emptied += 1
+                    continue
+                obj, fixed = new, fixed + 1
+        objects.append(obj)
+    return objects, fixed, emptied
 
 
 def find_duplicates(train: list[Record], evals: list[Record], threshold: float, skip: set[str]) -> tuple[list[Issue], set[int]]:
@@ -111,6 +131,11 @@ def render(report: dict, show_all: bool) -> str:
         out.append(f"{t['errors']:,} errors and {t['warnings']:,} warnings in {t['records']:,} records.")
     if "written" in t:
         out.append(f"Wrote {t['written']:,} records to {t['clean_path']}, leaving out records with errors and repeats.")
+        if "tokens_stripped" in t:
+            line = f"Took template tokens out of {t['tokens_stripped']:,} of them"
+            if t["empty_after_stripping"]:
+                line += f", and left out {t['empty_after_stripping']:,} that had nothing else in a turn"
+            out.append(line + ".")
     return "\n".join(out)
 
 
@@ -134,6 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--similarity", type=float, default=0.8, metavar="X", help="near-duplicate threshold, 0 to 1 (default 0.8)")
     ap.add_argument("--skip", default="", metavar="CODES", help="comma-separated checks to turn off, e.g. boilerplate,near-duplicate")
     ap.add_argument("--write-clean", metavar="OUT", help="write the training records without errors or repeats to OUT as JSONL")
+    ap.add_argument("--strip-tokens", action="store_true", help="with --write-clean, take chat-template tokens out of the records written")
     ap.add_argument("--strict", action="store_true", help="exit with 1 on warnings too, not just errors")
     ap.add_argument("--all", action="store_true", help="list every issue instead of the first five of each kind")
     ap.add_argument("--json", action="store_true", help="print the report as JSON")
@@ -148,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
     unknown = skip - set(CHECKS)
     if unknown:
         ap.error(f"unknown check(s) in --skip: {', '.join(sorted(unknown))}. Known: {', '.join(CHECKS)}")
+    if args.strip_tokens and not args.write_clean:
+        ap.error("--strip-tokens works on the records --write-clean writes, so it needs --write-clean")
     if not 0 < args.similarity <= 1:
         ap.error("--similarity must be above 0 and at most 1")
 
@@ -192,10 +220,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.write_clean:
         kept = [r for rid, r in enumerate(train) if rid not in bad and rid not in repeats]
+        objects, fixed, emptied = clean_records(kept, args.strip_tokens)
         with open(args.write_clean, "w", encoding="utf-8", newline="\n") as f:
-            for rec in kept:
-                f.write(json.dumps(rec.data, ensure_ascii=False) + "\n")
-        report["summary"].update(written=len(kept), clean_path=args.write_clean)
+            for obj in objects:
+                # U+2028 and U+2029 are escaped: some JSON Lines readers split lines on them.
+                line = json.dumps(obj, ensure_ascii=False).replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+                f.write(line + "\n")
+        report["summary"].update(written=len(objects), clean_path=args.write_clean)
+        if args.strip_tokens:
+            report["summary"].update(tokens_stripped=fixed, empty_after_stripping=emptied)
 
     if args.json:
         report["token_count"] = "estimate" if approx else args.tokenizer

@@ -31,6 +31,9 @@ CHECKS = {
     "near-duplicate": ("warning", "the record is almost the same as an earlier one"),
 }
 
+# Tokens that end a turn or a sequence. Text after one in an answer is often a model that did not stop.
+END_TOKENS = {"<|im_end|>", "<|endoftext|>", "<|eot_id|>", "<end_of_turn>", "<|end|>", "</s>"}
+
 TEMPLATE_TOKENS = [
     "<|im_start|>",
     "<|im_end|>",
@@ -111,7 +114,12 @@ def _turn_issues(turns: list[Turn], where: str, first: int = 1, label: str = "tu
     found = next(((i, t, tok) for i, t in enumerate(turns, first) for tok in TEMPLATE_TOKENS if tok in t.text), None)
     if found:
         i, t, tok = found
-        issues.append(Issue("template-token", where, f"{label} {i} ({t.role}) contains {tok}; the chat template adds these itself"))
+        after = t.text.split(tok, 1)[1].strip()
+        if t.role == "assistant" and tok in END_TOKENS and after:
+            note = f" followed by {len(after):,} more characters, which is often a model running on past its answer"
+        else:
+            note = "; the chat template adds these itself"
+        issues.append(Issue("template-token", where, f"{label} {i} ({t.role}) contains {tok}{note}"))
     if boilerplate:
         for i, t in enumerate(turns, first):
             m = BOILERPLATE.search(t.text) if t.role == "assistant" else None
