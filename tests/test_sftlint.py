@@ -579,7 +579,7 @@ def test_cli_strip_tokens(tmp_path, capsys):
         "<|im_start|>user\nq<|im_end|>",
     ]
     printed = capsys.readouterr().out
-    assert "Took template tokens out of 1 of them, and left out 1 that had nothing else in a turn." in printed
+    assert "Fixed 1 of them, and left out 1 that had a turn with nothing left in it." in printed
     with pytest.raises(SystemExit):
         cli.main([data, "--strip-tokens"])
 
@@ -591,3 +591,88 @@ def test_written_lines_escape_unicode_line_separators(tmp_path):
     text = out.read_text(encoding="utf-8")
     assert " " not in text and len(text.splitlines()) == 1
     assert json.loads(text)["messages"][1]["content"] == "one two three"
+
+
+# --- cutting answers that run on ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Answer.</s> \nHow does it help?", "Answer."),
+        ("Answer.<|im_end|>\n<|im_start|>user\nNext?", "Answer."),
+        ("Answer.</s>", "Answer.</s>"),  # nothing after it: --strip-tokens handles that
+        ("No tokens.", "No tokens."),
+        ("</s>only junk", ""),
+    ],
+)
+def test_cut_text(text, expected):
+    from sftlint.fix import cut_text
+
+    assert cut_text(text) == expected
+
+
+RUN_ON = "Paris.</s> \nWhat is the capital of Spain?"
+
+
+@pytest.mark.parametrize(
+    "obj, expected",
+    [
+        (chat("Capital?", RUN_ON), chat("Capital?", "Paris.")),
+        # an end token in a prompt is a turn boundary, not a run-on, so prompts are never cut
+        (chat("A</s> B", "Fine."), chat("A</s> B", "Fine.")),
+        (
+            {"conversations": [{"from": "human", "value": "Q"}, {"from": "gpt", "value": RUN_ON}]},
+            {"conversations": [{"from": "human", "value": "Q"}, {"from": "gpt", "value": "Paris."}]},
+        ),
+        ({"instruction": "Q", "input": "", "output": RUN_ON}, {"instruction": "Q", "input": "", "output": "Paris."}),
+        ({"prompt": "Q</s> x", "completion": RUN_ON}, {"prompt": "Q</s> x", "completion": "Paris."}),
+        (pair("Q", RUN_ON, "Lyon.</s> more"), pair("Q", "Paris.", "Lyon.")),
+        (
+            pair(msgs(("user", "Q")), msgs(("assistant", RUN_ON)), msgs(("assistant", "No."))),
+            pair(msgs(("user", "Q")), msgs(("assistant", "Paris.")), msgs(("assistant", "No."))),
+        ),
+        # pairs of pre-formatted dialogues are text: their end tokens are part of the template
+        (
+            pair(None, "Human: Q</s> Assistant: A", "Human: Q</s> Assistant: B"),
+            pair(None, "Human: Q</s> Assistant: A", "Human: Q</s> Assistant: B"),
+        ),
+        (
+            {"messages": [{"role": "assistant", "content": [{"type": "text", "text": RUN_ON}]}]},
+            {"messages": [{"role": "assistant", "content": [{"type": "text", "text": "Paris."}]}]},
+        ),
+    ],
+)
+def test_cut_run_on(obj, expected):
+    from sftlint.fix import cut_run_on
+
+    assert cut_run_on(obj, rec(obj).fmt) == expected
+
+
+def test_cli_cut_run_on(tmp_path, capsys):
+    data = write_jsonl(tmp_path / "d.jsonl", [chat("q1", RUN_ON), chat("q2", "</s>junk"), chat("q3", "Clean.")])
+    out = tmp_path / "clean.jsonl"
+    cli.main([data, "--write-clean", str(out), "--cut-run-on"])
+    kept = [json.loads(line)["messages"][-1]["content"] for line in out.read_text(encoding="utf-8").splitlines()]
+    assert kept == ["Paris.", "Clean."]
+    assert "Fixed 1 of them, and left out 1 that had a turn with nothing left in it." in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        cli.main([data, "--cut-run-on"])
+
+
+@pytest.mark.parametrize(
+    "text, is_token",
+    [
+        ("<p>x</p>\n<s>already filled</s>", False),  # an XML element named s
+        ("That was <s>wrong</s> right.", False),  # HTML strikethrough
+        ("Answer.</s>", True),
+        ("<s>[INST] Hi [/INST] Hello </s>", True),  # Llama 2's template
+    ],
+)
+def test_markup_s_tags_are_not_end_tokens(text, is_token):
+    from sftlint.fix import cut_text, strip_text
+
+    assert ("template-token" in codes(chat("q", text))) is is_token
+    if not is_token:
+        assert cut_text(text + " more") == text + " more"
+        assert strip_text(text) == text
