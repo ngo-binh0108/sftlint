@@ -21,6 +21,7 @@ dependencies = []
 [project.optional-dependencies]
 tokenizer = ["tokenizers"]
 fast = ["numpy"]
+hub = ["pyarrow"]
 test = ["pytest"]
 
 [project.scripts]
