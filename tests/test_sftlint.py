@@ -381,3 +381,138 @@ def test_preference_pairs_written_out_as_text():
 
 def test_empty_preference_lists_do_not_crash():
     assert codes({"chosen": [], "rejected": []}) == ["no-assistant"]
+
+
+# --- Hugging Face datasets and other file types -------------------------------
+
+
+def test_gzipped_jsonl(tmp_path):
+    import gzip
+
+    p = tmp_path / "d.jsonl.gz"
+    p.write_bytes(gzip.compress(b'{"text": "a"}\n{"text": "b"}\n'))
+    assert [r.where for r in load(str(p), "org/x/d.jsonl.gz")] == ["org/x/d.jsonl.gz:1", "org/x/d.jsonl.gz:2"]
+    bad = tmp_path / "bad.jsonl.gz"
+    bad.write_bytes(b"not gzip")
+    assert load(str(bad))[0].problems[0][0] == "bad-encoding"
+
+
+def test_parquet(tmp_path):
+    pq = pytest.importorskip("pyarrow.parquet")
+    import pyarrow
+
+    p = tmp_path / "d.parquet"
+    pq.write_table(pyarrow.Table.from_pylist([chat("hi", "hello"), chat("q", "")]), str(p))
+    records = load(str(p), "org/x/d.parquet")
+    assert [r.where for r in records] == ["org/x/d.parquet[0]", "org/x/d.parquet[1]"]
+    assert [codes(r.data) for r in records] == [[], ["empty-turn"]]
+
+
+def test_looks_like_repo(tmp_path, monkeypatch):
+    from sftlint import hub
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "org").mkdir()
+    (tmp_path / "org" / "local.jsonl").write_text("", encoding="utf-8")
+    assert hub.looks_like_repo("trl-lib/ultrafeedback_binarized")
+    assert hub.looks_like_repo("Anthropic/hh-rlhf/helpful-base/test.jsonl.gz")
+    assert not hub.looks_like_repo("org/local.jsonl")
+    assert not hub.looks_like_repo("train.jsonl")
+    assert not hub.looks_like_repo("./a/b")
+
+
+@pytest.mark.parametrize(
+    "split, expected",
+    [
+        ("train", ["data/train-00000-of-00002.parquet", "data/train-00001-of-00002.parquet"]),
+        ("test", ["test.jsonl"]),
+        ("validation", ["valid/validation.json.gz"]),
+    ],
+)
+def test_pick_files(split, expected):
+    from sftlint import hub
+
+    files = [
+        ("README.md", 1),
+        ("data/train-00000-of-00002.parquet", 1),
+        ("data/train-00001-of-00002.parquet", 1),
+        ("test.jsonl", 1),
+        ("contest.jsonl", 1),
+        ("valid/validation.json.gz", 1),
+    ]
+    assert [p for p, _ in hub.pick_files(files, split)] == expected
+
+
+def test_pick_files_prefers_json_copies_and_single_files():
+    from sftlint import hub
+
+    assert hub.pick_files([("train.jsonl", 1), ("train.parquet", 1)], "train") == [("train.jsonl", 1)]
+    assert hub.pick_files([("README.md", 1), ("all.jsonl", 1)], "train") == [("all.jsonl", 1)]
+    with pytest.raises(hub.HubError, match="no data file for split 'train'"):
+        hub.pick_files([("a.jsonl", 1), ("b.jsonl", 1)], "train")
+
+
+class FakeResponse:
+    def __init__(self, body: bytes, headers=None):
+        self.body, self.headers, self.pos = body, headers or {}, 0
+
+    def read(self, n=-1):
+        chunk = self.body[self.pos :] if n < 0 else self.body[self.pos : self.pos + n]
+        self.pos += len(chunk)
+        return chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def fake_hub(monkeypatch, tmp_path, files):
+    """Serve a dataset repo holding `files` ({path: bytes}), with the tree listing split over two pages."""
+    from sftlint import hub
+
+    monkeypatch.setenv("SFTLINT_CACHE", str(tmp_path / "cache"))
+    tree = [{"type": "file", "path": p, "size": len(b)} for p, b in files.items()] + [{"type": "directory", "path": "data"}]
+    calls = []
+
+    def request(url):
+        calls.append(url)
+        if "/api/datasets/" in url:
+            if "cursor=2" in url:
+                return FakeResponse(json.dumps(tree[1:]).encode())
+            return FakeResponse(json.dumps(tree[:1]).encode(), {"Link": f'<{url}&cursor=2>; rel="next"'})
+        path = url.split("/resolve/main/", 1)[1]
+        return FakeResponse(files[path])
+
+    monkeypatch.setattr(hub, "_request", request)
+    return calls
+
+
+def test_cli_reads_a_hugging_face_dataset(tmp_path, monkeypatch, capsys):
+    train = "".join(json.dumps(chat("q", a)) + "\n" for a in ["one", "two", ""]).encode()
+    test = (json.dumps(chat("q", "two")) + "\n").encode()
+    calls = fake_hub(monkeypatch, tmp_path, {"data/train.jsonl": train, "data/test.jsonl": test, "README.md": b"x"})
+    code, report = run(capsys, "org/ds", "--eval", "org/ds")
+    assert code == 1
+    assert [f["path"] for f in report["files"]] == ["org/ds/data/train.jsonl", "org/ds/data/test.jsonl"]
+    assert {(i["code"], i["where"]) for i in report["issues"]} == {
+        ("empty-turn", "org/ds/data/train.jsonl:3"),
+        ("eval-leak", "org/ds/data/test.jsonl:1"),
+    }
+    downloads = [u for u in calls if "/resolve/" in u]
+    assert len(downloads) == 2
+
+    # A second run reads the cached copies instead of downloading again.
+    run(capsys, "org/ds/data/train.jsonl")
+    assert len([u for u in calls if "/resolve/" in u]) == 2
+
+
+def test_cli_hub_errors(tmp_path, monkeypatch, capsys):
+    fake_hub(monkeypatch, tmp_path, {"data/train.jsonl": b"{}\n", "data/test.jsonl": b"{}\n"})
+    with pytest.raises(SystemExit):
+        cli.main(["org/ds/missing.jsonl"])
+    assert "org/ds has no file 'missing.jsonl'" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        cli.main(["org/ds", "--split", "validation"])
+    assert "no data file for split 'validation'" in capsys.readouterr().err
