@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sftlint"
+dynamic = ["version"]
+description = "Find broken records, duplicates and eval leaks in a fine-tuning dataset before you train on it."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [{ name = "ngo-binh0108" }]
+keywords = ["llm", "fine-tuning", "sft", "dataset", "jsonl", "deduplication", "minhash", "lint"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Environment :: Console",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []
+
+[project.optional-dependencies]
+tokenizer = ["tokenizers"]
+fast = ["numpy"]
+test = ["pytest"]
+
+[project.scripts]
+sftlint = "sftlint.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ngo-binh0108/sftlint"
+
+[tool.hatch.version]
+path = "src/sftlint/__init__.py"
+
+[tool.ruff]
+line-length = 140
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
