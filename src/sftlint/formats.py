@@ -35,12 +35,22 @@ class Record:
     where: str  # "file:line" for JSONL, "file[index]" for a JSON array
     data: object = None
     fmt: str | None = None
-    turns: list[Turn] = field(default_factory=list)
+    turns: list[Turn] = field(default_factory=list)  # for a preference record: the prompt, then the chosen answer
     problems: list[tuple[str, str]] = field(default_factory=list)  # (check code, message) found while reading
+    rejected: list[Turn] | None = None  # preference records only
+    prompt_turns: int = 0  # preference records only: how many of `turns` are the shared prompt
 
     @property
     def text(self) -> str:
         return "\n".join(t.text for t in self.turns)
+
+    @property
+    def sequences(self) -> list[str]:
+        """The texts a trainer feeds the model: one, or prompt + chosen and prompt + rejected for a preference pair."""
+        if self.rejected is None:
+            return [self.text]
+        prompt = self.turns[: self.prompt_turns]
+        return [self.text, "\n".join(t.text for t in prompt + self.rejected)]
 
 
 def _content_text(content) -> str | None:
@@ -63,25 +73,59 @@ def _content_text(content) -> str | None:
     return None
 
 
-def _messages(rec: Record, messages: list) -> None:
+def _messages(rec: Record, messages: list, label: str = "turn") -> list[Turn]:
+    turns = []
     for i, m in enumerate(messages, 1):
         if not isinstance(m, dict):
-            rec.problems.append(("bad-turn", f"turn {i} is not an object"))
+            rec.problems.append(("bad-turn", f"{label} {i} is not an object"))
             continue
         text = _content_text(m.get("content"))
         if text is None:
-            rec.problems.append(("bad-turn", f"turn {i} has content that is not text"))
+            rec.problems.append(("bad-turn", f"{label} {i} has content that is not text"))
             continue
         calls = m.get("tool_calls") or m.get("function_call")
         if not text.strip() and calls:
             text = json.dumps(calls, ensure_ascii=False)
-        rec.turns.append(Turn(str(m.get("role")), text))
+        turns.append(Turn(str(m.get("role")), text))
+    return turns
+
+
+def _side(rec: Record, value, role: str, label: str) -> list[Turn]:
+    """A prompt, chosen or rejected field: a plain string or a list of messages."""
+    if isinstance(value, list):
+        return _messages(rec, value, f"{label} turn")
+    if not isinstance(value, str):
+        rec.problems.append(("bad-turn", f"{label} is not a string or a list of messages"))
+        return []
+    return [Turn(role, value)]
+
+
+def _preference(rec: Record, obj: dict) -> None:
+    """TRL-style preference pairs, with the prompt in its own field or repeated at the start of both answers."""
+    rec.fmt = "preference"
+    if obj.get("prompt") is None and isinstance(obj["chosen"], str) and isinstance(obj["rejected"], str):
+        # Whole dialogues already written out as text, like Anthropic's hh-rlhf: there are no turns to check.
+        rec.turns, rec.rejected = [Turn("text", obj["chosen"])], [Turn("text", obj["rejected"])]
+        return
+    chosen = _side(rec, obj["chosen"], "assistant", "chosen")
+    rejected = _side(rec, obj["rejected"], "assistant", "rejected")
+    if obj.get("prompt") is not None:
+        prompt = _side(rec, obj["prompt"], "user", "prompt")
+    else:
+        # The prompt is the turns both answers start with; the last turn of each is always the answer.
+        shared = 0
+        while shared < min(len(chosen), len(rejected)) - 1 and chosen[shared] == rejected[shared]:
+            shared += 1
+        prompt, chosen, rejected = chosen[:shared], chosen[shared:], rejected[shared:]
+        if not prompt and len(chosen) > 1 and len(rejected) > 1:
+            rec.problems.append(("prompt-mismatch", "chosen and rejected do not start with the same prompt"))
+    rec.turns, rec.rejected, rec.prompt_turns = prompt + chosen, rejected, len(prompt)
 
 
 def _sharegpt(rec: Record, conversations: list) -> None:
     for i, m in enumerate(conversations, 1):
         if isinstance(m, dict) and "role" in m and "from" not in m:
-            _messages(rec, [m])
+            rec.turns += _messages(rec, [m])
             continue
         if not isinstance(m, dict) or not isinstance(m.get("value"), str):
             rec.problems.append(("bad-turn", f"turn {i} needs a 'from' and a string 'value'"))
@@ -98,7 +142,9 @@ def parse(rec: Record, obj) -> None:
         return
     if isinstance(obj.get("messages"), list):
         rec.fmt = "messages"
-        _messages(rec, obj["messages"])
+        rec.turns = _messages(rec, obj["messages"])
+    elif "chosen" in obj and "rejected" in obj:
+        _preference(rec, obj)
     elif isinstance(obj.get("conversations"), list):
         rec.fmt = "sharegpt"
         _sharegpt(rec, obj["conversations"])
@@ -115,7 +161,7 @@ def parse(rec: Record, obj) -> None:
         for role, key in (("user", "prompt"), ("assistant", "completion")):
             value = obj[key]
             if isinstance(value, list):  # TRL's conversational prompt-completion
-                _messages(rec, value)
+                rec.turns += _messages(rec, value)
             else:
                 rec.turns.append(Turn(role, "" if value is None else str(value)))
     elif isinstance(obj.get("text"), str):
@@ -126,7 +172,7 @@ def parse(rec: Record, obj) -> None:
         rec.problems.append(
             (
                 "unknown-format",
-                f"no messages, conversations, instruction/output, prompt/completion or text field (keys: {keys})",
+                f"no messages, chosen/rejected, conversations, instruction/output, prompt/completion or text field (keys: {keys})",
             )
         )
 
