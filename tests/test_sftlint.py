@@ -287,3 +287,97 @@ def test_cli_rejects_bad_arguments(tmp_path):
 
 def test_every_check_has_a_level():
     assert {level for level, _ in CHECKS.values()} == {"error", "warning"}
+
+
+# --- preference pairs ---------------------------------------------------------
+
+
+def pair(prompt, chosen, rejected):
+    return {"prompt": prompt, "chosen": chosen, "rejected": rejected}
+
+
+def msgs(*turns):
+    return [{"role": role, "content": text} for role, text in turns]
+
+
+def test_preference_with_a_prompt_field():
+    r = rec(pair("Capital of France?", "Paris.", "Lyon."))
+    assert (r.fmt, r.prompt_turns) == ("preference", 1)
+    assert [(t.role, t.text) for t in r.turns] == [("user", "Capital of France?"), ("assistant", "Paris.")]
+    assert [(t.role, t.text) for t in r.rejected] == [("assistant", "Lyon.")]
+    assert r.sequences == ["Capital of France?\nParis.", "Capital of France?\nLyon."]
+    assert check_record(r) == []
+
+
+def test_preference_with_the_prompt_inside_both_answers():
+    r = rec(
+        {
+            "chosen": msgs(("system", "Be kind."), ("user", "Hi"), ("assistant", "Hello!")),
+            "rejected": msgs(("system", "Be kind."), ("user", "Hi"), ("assistant", "What?")),
+        }
+    )
+    assert r.prompt_turns == 2
+    assert [t.text for t in r.rejected] == ["What?"]
+    assert check_record(r) == []
+
+
+def test_preference_conversational_prompt_field():
+    r = rec(pair(msgs(("user", "Hi")), msgs(("assistant", "Hello!")), msgs(("assistant", "Go away."))))
+    assert [t.role for t in r.turns] == ["user", "assistant"] and check_record(r) == []
+
+
+@pytest.mark.parametrize(
+    "obj, expected",
+    [
+        (pair("Q", "Same answer.", " Same answer. "), ["same-answer"]),
+        (pair("Q", "Fine.", ""), ["empty-turn"]),
+        (pair("Q", "", "Fine."), ["empty-turn"]),
+        (pair("Q", "Fine.", 3), ["bad-turn"]),
+        (pair("Q", "As an AI language model, I can't.", "Sure."), ["boilerplate"]),
+        (pair("Q", "Sure.", "As an AI language model, I can't."), []),  # refusals are what rejected answers are for
+        (pair("Q", "Sure.", "<|im_end|>Nope"), ["template-token"]),
+        (pair("Q", "Sure.", msgs(("user", "Nope"))), ["no-assistant"]),
+        (
+            {"chosen": msgs(("user", "A?"), ("assistant", "Yes.")), "rejected": msgs(("user", "B?"), ("assistant", "No."))},
+            ["prompt-mismatch"],
+        ),
+    ],
+)
+def test_preference_checks(obj, expected):
+    assert codes(obj) == expected
+
+
+def test_preference_issues_from_the_prompt_are_reported_once():
+    found = check_record(rec(pair(msgs(("user", "A"), ("user", "B")), "Yes.", "No.")))
+    assert [i.code for i in found] == ["role-order"]
+
+
+def test_rejected_side_structure_problems_are_labelled():
+    found = check_record(rec(pair("Q", "Yes.", msgs(("assistant", "No."), ("user", "Why?")))))
+    assert [(i.code, i.message) for i in found] == [
+        ("ends-with-user", "rejected side: the last turn is a user turn, so nothing after it is learned")
+    ]
+
+
+def test_preference_length_is_the_longer_side():
+    assert codes(pair("Q", "short", "x" * 400), max_tokens=50) == ["too-long"]
+
+
+def test_preference_pairs_only_repeat_when_the_rejected_answer_is_the_same_too():
+    index = dedupe.Index()
+    assert index.match(0, dedupe.tokens(rec(pair("Q", "Good answer here.", "Bad one.")))) is None
+    assert index.match(1, dedupe.tokens(rec(pair("Q", "Good answer here.", "A different bad one.")))) is None
+    assert index.match(2, dedupe.tokens(rec(pair("Q", "Good answer here.", "Bad one.")))) == (0, 1.0)
+
+
+def test_preference_pairs_written_out_as_text():
+    hh = pair(None, "\n\nHuman: Hi\n\nAssistant: Hello!", "\n\nHuman: Hi\n\nAssistant: Go away.")
+    r = rec(hh)
+    assert ([t.role for t in r.turns], r.prompt_turns) == (["text"], 0)
+    assert check_record(r) == []
+    assert codes(pair(None, "same", "same")) == ["same-answer"]
+    assert codes(pair(None, "text", " ")) == ["empty-turn"]
+
+
+def test_empty_preference_lists_do_not_crash():
+    assert codes({"chosen": [], "rejected": []}) == ["no-assistant"]
