@@ -1,0 +1,24 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.9", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # numpy only on the newer Python, so the pure-Python path is tested on its own as well
+      - run: pip install -e ".[test${{ matrix.python == '3.13' && ',fast' || '' }}]" ruff
+      - run: ruff check src tests
+      - run: ruff format --check src tests
+      - run: pytest -q
