@@ -2,13 +2,14 @@
 
 [![tests](https://github.com/ngo-binh0108/sftlint/actions/workflows/tests.yml/badge.svg)](https://github.com/ngo-binh0108/sftlint/actions/workflows/tests.yml)
 
-Check a fine-tuning dataset before you spend GPU hours on it. sftlint reads chat datasets in JSONL and finds the
-records that quietly make a fine-tune worse:
+Check a fine-tuning dataset before you spend GPU hours on it. sftlint reads chat and preference (DPO) datasets in
+JSONL and finds the records that quietly make a fine-tune worse:
 
 - lines that are not valid JSON, empty answers, unknown roles, conversations with no assistant turn
 - turns out of order: two user turns in a row, a system prompt in the middle, a tool result with no tool call
 - chat-template tokens such as `<|im_start|>` or `[INST]` pasted into the text, which the template then adds a second time
 - "As an AI language model" boilerplate and refusals in the answers
+- preference pairs whose chosen and rejected answers are the same, or continue different prompts
 - exact and near-duplicate records
 - eval or test records that also appear in the training data
 - records longer than your training context
@@ -100,6 +101,7 @@ Each record is detected on its own, so one file can mix formats.
 | ShareGPT | `conversations`: a list of `from` (`human`, `gpt`, `system`, ...) and `value` |
 | Alpaca | `instruction`, optional `input`, `output`, optional `system` |
 | prompt-completion | `prompt` and `completion`, as strings or as message lists |
+| preference (DPO, ORPO, reward models) | `chosen` and `rejected`, with an optional `prompt`; each a string or a message list. Without `prompt`, the turns both answers start with are the prompt. Pairs of plain strings with no prompt, like Anthropic's hh-rlhf, are treated as text |
 | text | `text`, already formatted with a chat template; only empty and too-long records are checked |
 
 Files ending in `.json` may hold one array of records; anything else is read as JSON Lines.
@@ -115,13 +117,35 @@ Files ending in `.json` may hold one array of records; anything else is read as 
 | `unknown-role` | error | roles other than system, developer, user, assistant, tool, function and ipython |
 | `no-assistant` | error | records with nothing for the model to learn |
 | `eval-leak` | error | eval records that are the same as, or nearly the same as, a training record |
+| `same-answer` | error | preference pairs whose chosen and rejected answers are the same |
+| `prompt-mismatch` | error | preference pairs without a `prompt` field whose two answers start from different prompts |
 | `role-order` | warning | a conversation starting with the assistant, two user or assistant turns in a row, a system turn after the start, a tool result with no assistant turn before it |
 | `ends-with-user` | warning | a last turn that is not from the assistant, so nothing after it is learned |
 | `template-token` | warning | template tokens from ChatML, Llama 3, Gemma, Phi, Mistral and Llama 2 inside the text |
-| `boilerplate` | warning | "As an AI language model", "my knowledge cutoff", stock refusals and similar phrases in assistant turns |
-| `too-long` | warning | records over `--max-tokens` |
+| `boilerplate` | warning | "As an AI language model", "my knowledge cutoff", stock refusals and similar phrases in assistant turns; in a preference pair only the chosen side is checked, since rejected answers are often refusals |
+| `too-long` | warning | records over `--max-tokens`; for a preference pair, the longer of prompt + chosen and prompt + rejected |
 | `duplicate` | warning | records that repeat an earlier one, ignoring case, spacing and punctuation |
 | `near-duplicate` | warning | records at least `--similarity` similar to an earlier one |
+
+## Preference datasets
+
+On the 2,354 test pairs of Anthropic's [hh-rlhf](https://huggingface.co/datasets/Anthropic/hh-rlhf) (`helpful-base`):
+
+```text
+$ sftlint test.jsonl
+test.jsonl: 2,354 records (2,354 preference)
+  tokens per record: p50 ~179, p95 494, max 1,015
+
+ERROR   same-answer: the chosen and rejected answers are the same (2)
+  test.jsonl:722  chosen and rejected are the same, so the pair teaches nothing
+  test.jsonl:2169  chosen and rejected are the same, so the pair teaches nothing
+
+WARNING near-duplicate: the record is almost the same as an earlier one (2)
+  test.jsonl:822  ~0.88 similar to test.jsonl:330
+  test.jsonl:1895  ~0.84 similar to test.jsonl:1488
+
+2 errors and 2 warnings in 2,354 records.
+```
 
 ## How duplicates are found
 
@@ -135,7 +159,8 @@ so sftlint uses MinHash with 64 hashes and locality-sensitive hashing in 16 band
 with records that share a band. The reported similarity is an estimate, usually within 0.05 of the true value.
 Records under three words are only checked for exact duplicates.
 
-The first record of a group is kept and the later ones are reported. On 20,000 records of 150 words it takes
+A preference pair's rejected answer is part of its text, so pairs that share a prompt and a chosen answer are not
+duplicates unless the rejected answer matches too. The first record of a group is kept and the later ones are reported. On 20,000 records of 150 words it takes
 about 10 seconds with numpy and 30 without it.
 
 ## Limits
@@ -145,7 +170,7 @@ about 10 seconds with numpy and 30 without it.
 - The boilerplate check is a list of English phrases. It finds the common ones, not every refusal.
 - `--write-clean` keeps records that only have warnings other than duplicates. Use `--skip` and `--strict` to
   decide which warnings matter for your dataset.
-- Preference datasets (`chosen` and `rejected`) are not supported yet.
+- KTO-style records (`prompt`, `completion`, `label`) are checked as prompt-completion; the label is not looked at.
 
 ## Development
 

@@ -37,8 +37,8 @@ def percentile(values: list[int], q: float) -> int:
 
 def file_stats(records: list[Record], count) -> dict:
     parsed = [r for r in records if r.fmt]
-    lengths = [count(r.text) for r in parsed]
-    turns = [len(r.turns) for r in parsed if r.fmt != "text"]
+    lengths = [max(count(text) for text in r.sequences) for r in parsed]
+    turns = [len(r.turns) for r in parsed if r.turns and r.turns[0].role != "text"]  # text has no turns to count
     systems = Counter(t.text for r in parsed for t in r.turns[:1] if t.role in ("system", "developer"))
     return {
         "records": len(records),
