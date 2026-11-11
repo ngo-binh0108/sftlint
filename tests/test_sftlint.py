@@ -516,3 +516,78 @@ def test_cli_hub_errors(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit):
         cli.main(["org/ds", "--split", "validation"])
     assert "no data file for split 'validation'" in capsys.readouterr().err
+
+
+# --- taking template tokens out -----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("<|im_start|>assistant\nCook garlic.<|im_end|>", "Cook garlic."),
+        ("<|start_header_id|>assistant<|end_header_id|>\n\nHi there<|eot_id|>", "Hi there"),
+        ("<start_of_turn>model\nOk<end_of_turn>\n", "Ok"),
+        ("The answer.</s>", "The answer."),
+        ("<|im_end|>", ""),
+        ("Use <s> tags", "Use <s> tags"),
+        ("No tokens  ", "No tokens  "),
+        # tokens in the middle are turn boundaries: taking them out would run the turns together
+        (
+            "<|im_start|>user\nA<|im_end|>\n<|im_start|>assistant\nB<|im_end|>",
+            "<|im_start|>user\nA<|im_end|>\n<|im_start|>assistant\nB<|im_end|>",
+        ),
+        ("Answer.</s> \nNext question?", "Answer.</s> \nNext question?"),
+    ],
+)
+def test_strip_text(text, expected):
+    from sftlint.fix import strip_text
+
+    assert strip_text(text) == expected
+
+
+def test_strip_tokens_walks_the_whole_record():
+    from sftlint.fix import strip_tokens
+
+    obj = {"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi<|im_end|>"}]}], "n": 3}
+    assert strip_tokens(obj) == {"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi"}]}], "n": 3}
+
+
+def test_end_token_with_text_after_it_is_called_a_run_on():
+    found = check_record(rec(chat("q", "Answer.</s> \nHow does the assistant's answer help?")))
+    assert [i.code for i in found] == ["template-token"]
+    assert "followed by 37 more characters, which is often a model running on" in found[0].message
+    found = check_record(rec(chat("q", "Answer.</s>")))
+    assert found[0].message.endswith("the chat template adds these itself")
+
+
+def test_cli_strip_tokens(tmp_path, capsys):
+    data = write_jsonl(
+        tmp_path / "d.jsonl",
+        [
+            chat("q1", "<|im_start|>assistant\nFine answer.<|im_end|>"),
+            chat("q2", "<|eot_id|>"),  # nothing left once the token goes
+            chat("q3", "Mid.</s> run on"),  # left as it is
+            {"text": "<|im_start|>user\nq<|im_end|>"},  # pre-formatted text keeps its tokens
+        ],
+    )
+    out = tmp_path / "clean.jsonl"
+    cli.main([data, "--write-clean", str(out), "--strip-tokens"])
+    kept = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert [r.get("messages", [{}])[-1].get("content", r.get("text")) for r in kept] == [
+        "Fine answer.",
+        "Mid.</s> run on",
+        "<|im_start|>user\nq<|im_end|>",
+    ]
+    printed = capsys.readouterr().out
+    assert "Took template tokens out of 1 of them, and left out 1 that had nothing else in a turn." in printed
+    with pytest.raises(SystemExit):
+        cli.main([data, "--strip-tokens"])
+
+
+def test_written_lines_escape_unicode_line_separators(tmp_path):
+    data = write_jsonl(tmp_path / "d.jsonl", [chat("q", "one two three")])
+    out = tmp_path / "clean.jsonl"
+    cli.main([data, "--write-clean", str(out)])
+    text = out.read_text(encoding="utf-8")
+    assert " " not in text and len(text.splitlines()) == 1
+    assert json.loads(text)["messages"][1]["content"] == "one two three"
