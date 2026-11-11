@@ -33,6 +33,7 @@ sftlint train.jsonl --eval test.jsonl                # also look for test record
 sftlint train.jsonl --max-tokens 4096 --tokenizer Qwen/Qwen3-8B
 sftlint train.jsonl --write-clean train.clean.jsonl  # keep only records without errors or repeats
 sftlint train.jsonl --write-clean out.jsonl --strip-tokens   # and take stray template tokens off the text
+sftlint train.jsonl --write-clean out.jsonl --cut-run-on     # and end answers that run on past an end token
 sftlint train.jsonl --json                           # machine-readable report
 sftlint trl-lib/ultrafeedback_binarized --eval trl-lib/ultrafeedback_binarized   # a Hugging Face dataset, train vs test
 sftlint Anthropic/hh-rlhf/helpful-base/test.jsonl.gz                            # one file from a dataset
@@ -95,6 +96,7 @@ warnings count too.
 | `--skip CODES` | none | checks to turn off, comma-separated, e.g. `boilerplate,near-duplicate` |
 | `--write-clean OUT` | off | write the training records without errors, duplicates or near-duplicates to OUT |
 | `--strip-tokens` | off | with `--write-clean`, take template tokens off the start and end of every string written |
+| `--cut-run-on` | off | with `--write-clean`, end each answer at an end token that has more text after it |
 | `--strict` | off | exit with 1 on warnings as well |
 | `--all` | off | list every issue instead of the first five of each kind |
 | `--json` | off | print the report as JSON |
@@ -152,11 +154,11 @@ $ sftlint trl-lib/ultrafeedback_binarized --eval trl-lib/ultrafeedback_binarized
 ERROR   empty-turn: a turn has no text (95)
 ERROR   eval-leak: an eval record also appears in the training data (1)
 ERROR   same-answer: the chosen and rejected answers are the same (447)
-WARNING template-token: the text contains chat-template tokens (415)
+WARNING template-token: the text contains chat-template tokens (410)
 WARNING boilerplate: an assistant turn (or a chosen answer) has AI boilerplate or a refusal (1,041)
 WARNING near-duplicate: the record is almost the same as an earlier one (87)
 
-543 errors and 1,543 warnings in 63,135 records.
+543 errors and 1,538 warnings in 63,135 records.
 ```
 
 447 pairs have the same chosen and rejected answer, and 95 have an empty answer on one side. Most of the
@@ -177,6 +179,22 @@ empty turn is not written.
 Text with tokens in the middle is left as it is and still reported. Tokens there mark turn boundaries or an answer
 that runs on, and taking them out would run turns together or keep text that should be cut. `text` records are
 also left alone, since a pre-formatted record is meant to hold its template.
+
+`--cut-run-on` deals with the answers that run on. An answer with an end token (`</s>`, `<|im_end|>`, `<|eot_id|>`,
+`<end_of_turn>`, `<|end|>`, `<|endoftext|>`) followed by more text is cut at the token. Only answers are cut: the
+assistant turns of a conversation, an Alpaca `output`, a `completion`, and the `chosen` and `rejected` answers of a
+preference pair. In a prompt, a token in the middle is a turn boundary. `</s>` closing an earlier `<s>` is taken for a
+markup tag and left alone, unless the text also has Llama 2's `[INST]`.
+
+On ultrafeedback_binarized, the two options together fix 398 records and drop 4 whose answer was nothing but text
+after `</s>`. Checking the result again finds no template tokens left:
+
+```text
+$ sftlint trl-lib/ultrafeedback_binarized --write-clean clean.jsonl --cut-run-on --strip-tokens
+...
+Wrote 61,531 records to clean.jsonl, leaving out records with errors and repeats.
+Fixed 398 of them, and left out 4 that had a turn with nothing left in it.
+```
 
 ## Preference datasets
 
