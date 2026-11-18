@@ -91,6 +91,7 @@ warnings count too.
 | `--eval-split NAME` | `test` | split to read from a Hugging Face dataset given to `--eval` |
 | `--revision REV` | `main` | branch, tag or commit of Hugging Face datasets |
 | `--max-tokens N` | off | warn about records longer than N tokens |
+| `--min-tokens N` | off | warn about records shorter than N tokens, such as stubs and truncated answers |
 | `--tokenizer NAME` | estimate | count tokens with a Hugging Face tokenizer: a repo id or a `tokenizer.json` path |
 | `--similarity X` | `0.8` | how similar two records must be to count as near-duplicates |
 | `--skip CODES` | none | checks to turn off, comma-separated, e.g. `boilerplate,near-duplicate` |
@@ -135,6 +136,7 @@ decompressed first. Anything else is read as JSON Lines.
 | `template-token` | warning | template tokens from ChatML, Llama 3, Gemma, Phi, Mistral and Llama 2 inside the text; an end token with more text after it in an answer is called out, since that is usually a model that did not stop |
 | `boilerplate` | warning | "As an AI language model", "my knowledge cutoff", stock refusals and similar phrases in assistant turns; in a preference pair only the chosen side is checked, since rejected answers are often refusals |
 | `too-long` | warning | records over `--max-tokens`; for a preference pair, the longer of prompt + chosen and prompt + rejected |
+| `too-short` | warning | records under `--min-tokens`; for a preference pair, the shorter of prompt + chosen and prompt + rejected |
 | `duplicate` | warning | records that repeat an earlier one, ignoring case, spacing and punctuation |
 | `near-duplicate` | warning | records at least `--similarity` similar to an earlier one |
 

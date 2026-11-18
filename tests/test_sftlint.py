@@ -151,6 +151,23 @@ def test_too_long():
     assert codes(chat("hi", "x" * 400), max_tokens=50, count=lambda text: 1) == []
 
 
+def test_too_short():
+    assert codes(chat("hi", "ok"), min_tokens=20) == ["too-short"]
+    assert codes(chat("hi", "x" * 400), min_tokens=20) == []
+    assert codes(chat("hi", "ok"), min_tokens=20, count=lambda text: 50) == []
+    # a preference pair is as short as its shorter side
+    assert codes(pair("Q", "x" * 400, "no"), min_tokens=20) == ["too-short"]
+
+
+def test_token_limits_are_validated(capsys, tmp_path):
+    data = write_jsonl(tmp_path / "d.jsonl", [chat("hi", "ok")])
+    for bad in (["--max-tokens", "0"], ["--min-tokens", "-1"], ["--min-tokens", "10", "--max-tokens", "5"]):
+        with pytest.raises(SystemExit):
+            cli.main([data, *bad])
+    assert cli.main([data, "--min-tokens", "20"]) == 0
+    assert "WARNING too-short" in capsys.readouterr().out
+
+
 def test_approx_tokens_counts_cjk_characters_one_each():
     assert approx_tokens("abcdefgh") == 2
     assert approx_tokens("你好世界") == 4
