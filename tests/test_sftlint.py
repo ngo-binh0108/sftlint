@@ -265,8 +265,17 @@ def test_cli_write_clean(dataset, tmp_path, capsys):
     out = tmp_path / "clean.jsonl"
     cli.main([train, "--eval", evals, "--write-clean", str(out)])
     kept = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    # q2 also appears in the eval set, so its training copy is left out as well
+    assert [r["messages"][0]["content"] for r in kept] == ["q1", "q4"]
+    assert "Wrote 2 records" in capsys.readouterr().out
+
+
+def test_cli_write_clean_keeps_leaks_when_the_leak_check_is_skipped(dataset, tmp_path):
+    train, evals = dataset
+    out = tmp_path / "clean.jsonl"
+    cli.main([train, "--eval", evals, "--write-clean", str(out), "--skip", "eval-leak"])
+    kept = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     assert [r["messages"][0]["content"] for r in kept] == ["q1", "q2", "q4"]
-    assert "Wrote 3 records" in capsys.readouterr().out
 
 
 def test_cli_text_output_without_numpy(dataset, capsys, monkeypatch):

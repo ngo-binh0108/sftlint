@@ -78,7 +78,7 @@ WARNING near-duplicate: the record is almost the same as an earlier one (1)
   train.jsonl:4  ~0.94 similar to train.jsonl:1
 
 5 errors and 4 warnings in 14 records.
-Wrote 6 records to clean.jsonl, leaving out records with errors and repeats.
+Wrote 5 records to clean.jsonl, leaving out records with errors and repeats.
 ```
 
 The exit code is 1 when there are errors, so it can stop a training script or a CI job. With `--strict`,
@@ -94,7 +94,7 @@ warnings count too.
 | `--tokenizer NAME` | estimate | count tokens with a Hugging Face tokenizer: a repo id or a `tokenizer.json` path |
 | `--similarity X` | `0.8` | how similar two records must be to count as near-duplicates |
 | `--skip CODES` | none | checks to turn off, comma-separated, e.g. `boilerplate,near-duplicate` |
-| `--write-clean OUT` | off | write the training records without errors, duplicates or near-duplicates to OUT |
+| `--write-clean OUT` | off | write the training records without errors, duplicates, near-duplicates or eval leaks to OUT |
 | `--strip-tokens` | off | with `--write-clean`, take template tokens off the start and end of every string written |
 | `--cut-run-on` | off | with `--write-clean`, end each answer at an end token that has more text after it |
 | `--strict` | off | exit with 1 on warnings as well |
