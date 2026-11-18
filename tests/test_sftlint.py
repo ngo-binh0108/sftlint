@@ -442,6 +442,19 @@ def test_looks_like_repo(tmp_path, monkeypatch):
     assert not hub.looks_like_repo("./a/b")
 
 
+def test_a_mistyped_local_path_is_not_sent_to_the_hub(tmp_path, monkeypatch, capsys):
+    from sftlint import hub
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data" / "sub").mkdir(parents=True)
+    assert not hub.looks_like_repo("data/train.jsonl")  # no repo is named "train.jsonl"
+    assert not hub.looks_like_repo("data/sub/train.parquet")  # the folder is here, the file is not
+    assert hub.looks_like_repo("org/name/train.jsonl")  # a file inside a repo
+    with pytest.raises(SystemExit):
+        cli.main(["data/train.jsonl"])
+    assert "no such file: data/train.jsonl" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     "split, expected",
     [
