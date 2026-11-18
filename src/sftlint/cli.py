@@ -71,7 +71,8 @@ def clean_records(records: list[Record], strip: bool, cut: bool = False) -> tupl
 
 
 def find_duplicates(train: list[Record], evals: list[Record], threshold: float, skip: set[str]) -> tuple[list[Issue], set[int]]:
-    """Issues for repeated records, and the ids (positions in train + evals) of records that repeat an earlier one."""
+    """Issues for repeated records, and the ids (positions in train + evals) of records to leave out of a clean copy:
+    those that repeat an earlier record, and training records that leak into an eval set."""
     index = Index(threshold if "near-duplicate" not in skip else 1.0)
     everything = train + evals
     issues, repeats = [], set()
@@ -86,6 +87,8 @@ def find_duplicates(train: list[Record], evals: list[Record], threshold: float, 
         first = everything[original]
         if rid >= len(train) and original < len(train):
             code = "eval-leak"
+            if code not in skip:
+                repeats.add(original)  # keep the leaked training copy out of --write-clean too
             what = "the same as" if sim == 1 else f"~{sim:.2f} similar to"
             issues.append(Issue(code, rec.where, f"{what} training record {first.where}"))
         elif sim == 1:
