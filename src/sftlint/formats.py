@@ -208,6 +208,10 @@ def load(path: str, name: str | None = None) -> list[Record]:
     path = name  # from here on, records are labelled with the name
     if raw.startswith(b"\xef\xbb\xbf"):
         raw = raw[3:]
+    elif raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        # Windows PowerShell 5.1's > and Out-File write UTF-16; training libraries expect UTF-8
+        message = "file is UTF-16, not UTF-8 (as PowerShell's > and Out-File write it); save it as UTF-8"
+        return [Record(path, path, problems=[("bad-encoding", message)])]
 
     if lower.endswith(".json"):
         try:

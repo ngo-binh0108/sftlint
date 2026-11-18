@@ -406,6 +406,18 @@ def test_gzipped_jsonl(tmp_path):
     assert load(str(bad))[0].problems[0][0] == "bad-encoding"
 
 
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
+def test_utf16_file_is_one_encoding_error(tmp_path, capsys, encoding):
+    # what Windows PowerShell 5.1 writes with > or Out-File
+    p = tmp_path / "train.jsonl"
+    text = '{"text": "a"}\n{"text": "b"}\n'
+    p.write_bytes(("\ufeff" + text).encode(encoding))
+    (rec,) = load(str(p))
+    assert rec.problems[0][0] == "bad-encoding" and "UTF-16" in rec.problems[0][1]
+    code, report = run(capsys, str(p))
+    assert code == 1 and [i["code"] for i in report["issues"]] == ["bad-encoding"]
+
+
 def test_parquet(tmp_path):
     pq = pytest.importorskip("pyarrow.parquet")
     import pyarrow
