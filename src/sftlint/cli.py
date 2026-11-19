@@ -159,6 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--eval-split", default="test", help="split to read from a Hugging Face dataset given to --eval (default test)")
     ap.add_argument("--revision", default="main", help="branch, tag or commit of Hugging Face datasets (default main)")
     ap.add_argument("--max-tokens", type=int, metavar="N", help="warn about records longer than N tokens")
+    ap.add_argument("--min-tokens", type=int, metavar="N", help="warn about records shorter than N tokens")
     ap.add_argument("--tokenizer", metavar="NAME", help="count tokens with this Hugging Face tokenizer (repo id or tokenizer.json)")
     ap.add_argument("--similarity", type=float, default=0.8, metavar="X", help="near-duplicate threshold, 0 to 1 (default 0.8)")
     ap.add_argument("--skip", default="", metavar="CODES", help="comma-separated checks to turn off, e.g. boilerplate,near-duplicate")
@@ -184,6 +185,11 @@ def main(argv: list[str] | None = None) -> int:
             ap.error(f"{flag} works on the records --write-clean writes, so it needs --write-clean")
     if not 0 < args.similarity <= 1:
         ap.error("--similarity must be above 0 and at most 1")
+    for flag, value in (("--max-tokens", args.max_tokens), ("--min-tokens", args.min_tokens)):
+        if value is not None and value < 1:
+            ap.error(f"{flag} must be at least 1")
+    if args.max_tokens and args.min_tokens and args.min_tokens > args.max_tokens:
+        ap.error("--min-tokens cannot be more than --max-tokens")
 
     sources = []  # (name shown in the report, local path, is eval)
     for ref, is_eval in [(f, False) for f in args.files] + [(f, True) for f in args.eval]:
@@ -206,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     issues: list[Issue] = []
     bad: set[int] = set()
     for rid, rec in enumerate(train + evals):
-        found = [i for i in check_record(rec, args.max_tokens, count) if i.code not in skip]
+        found = [i for i in check_record(rec, args.max_tokens, count, args.min_tokens) if i.code not in skip]
         issues += found
         if any(i.level == "error" for i in found):
             bad.add(rid)

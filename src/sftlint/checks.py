@@ -27,6 +27,7 @@ CHECKS = {
     "template-token": ("warning", "the text contains chat-template tokens"),
     "boilerplate": ("warning", "an assistant turn (or a chosen answer) has AI boilerplate or a refusal"),
     "too-long": ("warning", "the record is longer than --max-tokens"),
+    "too-short": ("warning", "the record is shorter than --min-tokens"),
     "duplicate": ("warning", "the record repeats an earlier one"),
     "near-duplicate": ("warning", "the record is almost the same as an earlier one"),
 }
@@ -155,7 +156,12 @@ def _structure_issues(turns: list[Turn], where: str, malformed: bool) -> list[Is
     return issues
 
 
-def check_record(rec: Record, max_tokens: int | None = None, count: Callable[[str], int] = approx_tokens) -> list[Issue]:
+def check_record(
+    rec: Record,
+    max_tokens: int | None = None,
+    count: Callable[[str], int] = approx_tokens,
+    min_tokens: int | None = None,
+) -> list[Issue]:
     issues = [Issue(code, rec.where, message) for code, message in rec.problems]
     if rec.fmt is None:
         return issues
@@ -190,8 +196,11 @@ def check_record(rec: Record, max_tokens: int | None = None, count: Callable[[st
         if answers[0] == answers[1] and answers[0]:
             issues.append(Issue("same-answer", rec.where, "chosen and rejected are the same, so the pair teaches nothing"))
 
-    if max_tokens:
-        n = max(count(text) for text in rec.sequences)
-        if n > max_tokens:
-            issues.append(Issue("too-long", rec.where, f"{n:,} tokens, over the limit of {max_tokens:,}"))
+    if max_tokens or min_tokens:
+        lengths = [count(text) for text in rec.sequences]
+        if max_tokens and max(lengths) > max_tokens:
+            issues.append(Issue("too-long", rec.where, f"{max(lengths):,} tokens, over the limit of {max_tokens:,}"))
+        # an empty record is already an empty-turn error
+        if min_tokens and 0 < min(lengths) < min_tokens:
+            issues.append(Issue("too-short", rec.where, f"{min(lengths):,} tokens, under the minimum of {min_tokens:,}"))
     return issues
