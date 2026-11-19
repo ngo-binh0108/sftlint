@@ -23,8 +23,17 @@ class HubError(Exception):
 
 
 def looks_like_repo(ref: str) -> bool:
-    """True for "org/name" or "org/name/path/in/repo", when no local file has that name."""
-    return not Path(ref).exists() and bool(_REF.fullmatch(ref))
+    """True for "org/name" or "org/name/path/in/repo", when no local file has that name.
+
+    A missing data file such as "data/train.jsonl" is a mistyped local path, not a repo: a repo name
+    does not end in a data file suffix, and a data file in a directory that exists here is local.
+    """
+    path = Path(ref)
+    if path.exists() or not _REF.fullmatch(ref):
+        return False
+    if ref.lower().endswith(DATA_SUFFIXES) and (ref.count("/") == 1 or path.parent.is_dir()):
+        return False
+    return True
 
 
 def _request(url: str):
